@@ -21,6 +21,12 @@ export function activeLine(lines, time) {
   return i;
 }
 
+// YouTube 재생목록·믹스 ID (list=PL…, RD…). 없으면 null.
+export function youtubeList(url) {
+  const m = String(url).match(/[?&]list=([\w-]+)/);
+  return m && /youtu/.test(url) ? m[1] : null;
+}
+
 // YouTube 주소에서 영상 ID를 뽑는다. 못 찾으면 null.
 export function youtubeId(url) {
   const m = String(url).trim().match(/(?:youtube\.com\/(?:watch\?(?:.*&)?v=|shorts\/|embed\/|live\/)|youtu\.be\/|music\.youtube\.com\/watch\?(?:.*&)?v=)([\w-]{11})/);

@@ -1,5 +1,5 @@
 import * as db from './db.js';
-import { parseLyrics, activeLine, youtubeId } from './lrc.js';
+import { parseLyrics, activeLine, youtubeId, youtubeList } from './lrc.js';
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -8,6 +8,8 @@ const PLAY = '<svg viewBox="0 0 24 24" class="fill"><path d="M7 4v16l13-8z"/></s
 const PAUSE = '<svg viewBox="0 0 24 24" class="fill"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>';
 const MORE = '<svg viewBox="0 0 24 24" class="fill"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>';
 const ytUrl = v => `https://www.youtube.com/watch?v=${v}`;
+// 곡 하나, 믹스(list=RD…), 재생목록(list=PL…) 모두의 원래 주소
+const trackUrl = t => !t.listId ? ytUrl(t.videoId) : t.videoId ? `${ytUrl(t.videoId)}&list=${t.listId}` : `https://www.youtube.com/playlist?list=${t.listId}`;
 
 // iOS 홈 화면 아이콘·잠금 화면 기본 이미지는 PNG가 필요해서 icon.svg를 그려 만든다.
 let iconPng = 'icon.svg';
@@ -31,7 +33,7 @@ async function loadAll() {
   await Promise.all([...tracks.values()].map(loadCover));
 }
 async function loadCover(t) {
-  if (t.type === 'youtube' && !t.hasCover) return covers.set(t.id, `https://i.ytimg.com/vi/${t.videoId}/hqdefault.jpg`);
+  if (t.type === 'youtube' && !t.hasCover) return t.videoId ? covers.set(t.id, `https://i.ytimg.com/vi/${t.videoId}/hqdefault.jpg`) : covers.delete(t.id);
   const b = await db.get('blobs', 'cover:' + t.id);
   if (covers.has(t.id) && covers.get(t.id).startsWith('blob:')) URL.revokeObjectURL(covers.get(t.id));
   b ? covers.set(t.id, URL.createObjectURL(b)) : covers.delete(t.id);
@@ -82,15 +84,17 @@ async function fetchJson(url) {
   const r = await fetch(url); if (!r.ok) throw new Error(r.status); return r.json();
 }
 async function addYouTube(url, meta = {}) {
-  const vid = youtubeId(url);
-  if (!vid) return toast('YouTube 주소가 아니에요');
-  if ([...tracks.values()].some(t => t.videoId === vid)) return toast('이미 추가된 영상이에요');
-  for (const u of meta.title ? [] : [`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(ytUrl(vid))}`,
-    `https://noembed.com/embed?url=${encodeURIComponent(ytUrl(vid))}`]) {
+  const vid = youtubeId(url), list = youtubeList(url);
+  if (!vid && !list) return toast('YouTube 주소가 아니에요');
+  if ([...tracks.values()].some(t => list ? t.listId === list : t.videoId === vid && !t.listId)) return toast('이미 추가된 항목이에요');
+  const src = trackUrl({ videoId: vid, listId: list }), mix = list?.startsWith('RD');
+  for (const u of meta.title ? [] : [`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(src)}`,
+    `https://noembed.com/embed?url=${encodeURIComponent(src)}`]) {
     try { meta = await fetchJson(u); if (meta.title) break; } catch { /* 다음 방법 시도 */ }
   }
+  const title = meta.title ? (mix ? `${meta.title} 믹스` : meta.title) : list ? (mix ? 'YouTube 믹스' : 'YouTube 재생목록') : `YouTube ${vid}`;
   const t = {
-    id: db.uid(), type: 'youtube', videoId: vid, title: meta.title || `YouTube ${vid}`, artist: meta.author_name || '',
+    id: db.uid(), type: 'youtube', videoId: vid, listId: list, title, artist: meta.author_name || '',
     album: '', lyrics: '', fav: false, plays: 0, addedAt: Date.now(),
   };
   await saveTrack(t); await loadCover(t);
@@ -117,7 +121,7 @@ async function searchYouTube(q) {
   renderYtResults();
 }
 function renderYtResults() {
-  const have = new Set([...tracks.values()].map(t => t.videoId));
+  const have = new Set([...tracks.values()].filter(t => !t.listId).map(t => t.videoId));
   $('#ytResults').innerHTML = ytResults.length ? `<ul class="list">${ytResults.map((r, i) => `<li class="item">
       <img class="art yt-thumb" src="${esc(r.thumb || 'icon.svg')}" alt="">
       <div class="grow"><div class="t">${esc(r.title)}</div><div class="s">${esc(r.artist)}</div></div>
@@ -144,7 +148,8 @@ function visible(list) {
 }
 
 function itemHtml(t, extra = '') {
-  const badge = t.type === 'youtube' ? '<span class="chip yt">YT</span>' : '<span class="chip file">FILE</span>';
+  const badge = t.type === 'file' ? '<span class="chip file">FILE</span>'
+    : `<span class="chip yt">${t.listId ? (t.listId.startsWith('RD') ? 'MIX' : '목록') : 'YT'}</span>`;
   const end = t.lyrics ? '가사' : '';
   return `<li class="item ${player.cur() === t.id ? 'playing' : ''}" data-id="${t.id}">
     <img class="art" src="${esc(cover(t))}" alt="" loading="lazy">
@@ -200,8 +205,9 @@ function render() {
           3. 사용자 인증 정보 → API 키 만들기 → 키 복사<br>4. 아래에 붙여넣고 저장 (이 기기에만 저장돼요)<br>무료로 하루 약 100번 검색할 수 있어요.</p>
           <form class="form-row" id="ytKeyForm"><input name="key" placeholder="API 키" value="${esc(ytKey())}" autocomplete="off"><button class="btn">저장</button></form></details></div>
       <div class="card"><h2>YouTube 링크</h2>
-        <form class="form-row" id="ytForm"><input name="url" type="url" inputmode="url" placeholder="https://youtu.be/…" required><button class="btn primary">추가</button></form>
+        <form class="form-row" id="ytForm"><input name="url" type="url" inputmode="url" placeholder="곡·믹스·재생목록 링크" required><button class="btn primary">추가</button></form>
         <button class="btn" data-act="paste" style="margin-top:8px">📋 붙여넣기로 추가</button>
+        <p>곡 링크뿐 아니라 <b>믹스·재생목록</b> 링크도 돼요. YouTube에서 믹스를 열고 공유 → 링크 복사 후 붙여넣으세요.</p>
         <p>YouTube 곡은 누르면 Brave에서 열려요. Brave에서 공유 → <b>Playlist에 추가</b>하면 광고 없이 화면을 꺼도 들을 수 있어요.</p></div>
       <div class="card"><h2>저장 공간</h2><p id="storage">확인 중…</p></div>
       <div class="card"><h2>앱처럼 쓰기</h2><p>Safari에서 공유 버튼 → <b>홈 화면에 추가</b>를 누르면 주소창 없이 앱처럼 열려요. 홈 화면에서 연 앱과 Safari 탭은 저장 공간이 따로라, 한쪽에서만 쓰세요.</p></div>`;
@@ -258,8 +264,8 @@ function trackSheet(id) {
     else if (act === 'addPl') pickPlaylist(id);
     else if (act === 'fav') { t.fav = !t.fav; await saveTrack(t); closeSheet(); render(); renderPlayer(); }
     else if (act === 'edit') { closeSheet(); editTrack(id); }
-    else if (act === 'ytapp') location.href = `https://youtu.be/${t.videoId}`;
-    else if (act === 'copy') { await navigator.clipboard?.writeText(ytUrl(t.videoId)); toast('링크를 복사했어요'); closeSheet(); }
+    else if (act === 'ytapp') location.href = trackUrl(t);
+    else if (act === 'copy') { await navigator.clipboard?.writeText(trackUrl(t)); toast('링크를 복사했어요'); closeSheet(); }
     else if (act === 'rmPl') { const p = playlists.find(x => x.id === openPlaylist); p.trackIds = p.trackIds.filter(x => x !== id); await savePlaylist(p); closeSheet(); render(); }
     else if (act === 'del') deleteTrack(id);
   });
@@ -268,7 +274,7 @@ function trackSheet(id) {
 function openBrave(t) {
   t.plays++; saveTrack(t);
   // Brave iOS URL 스킴. Brave가 없으면 아무 일도 일어나지 않아서 잠시 뒤 안내한다.
-  location.href = `brave://open-url?url=${encodeURIComponent(ytUrl(t.videoId))}`;
+  location.href = `brave://open-url?url=${encodeURIComponent(trackUrl(t))}`;
   setTimeout(() => { if (document.visibilityState === 'visible') toast('Brave가 열리지 않으면 "YouTube 앱에서 열기"나 링크 복사를 쓰세요'); }, 1500);
 }
 
@@ -358,13 +364,23 @@ function ytPlayer() {
       width: '100%', height: '100%', playerVars: { playsinline: 1, rel: 0 },
       events: {
         onReady: () => { yt = p; res(p); },
-        onStateChange: e => { if (e.data === 0 && isYt()) next(true); syncPlayState(); },
+        onStateChange: e => { if (e.data === 0 && isYt() && !listHasMore()) next(true); if (e.data === 1) showListVideo(); syncPlayState(); },
         onError: () => toast('이 영상은 앱 안에서 재생할 수 없어요. ⋯ 메뉴에서 Brave로 여세요'),
       },
     });
   }));
 }
 const isYt = () => tracks.get(player.cur())?.type === 'youtube';
+// 믹스·재생목록 재생 중: 목록 안의 다음/이전 곡은 YouTube 플레이어가 넘긴다
+const inList = () => !!(yt && isYt() && tracks.get(player.cur()).listId);
+const listHasMore = () => inList() && yt.getPlaylistIndex() < (yt.getPlaylist()?.length || 0) - 1;
+function showListVideo() {
+  const d = inList() && yt.getVideoData?.(), t = tracks.get(player.cur());
+  if (!d?.title) return;
+  $('#pTitle').textContent = $('#pTitle2').textContent = $('#miniTitle').textContent = d.title;
+  $('#pArtist').textContent = $('#pArtist2').textContent = `${d.author} · ${t.title}`;
+  setMeta({ id: t.id, title: d.title, artist: d.author, album: t.title });
+}
 const eng = {
   paused: () => isYt() ? !yt || ![1, 3].includes(yt.getPlayerState()) : audio.paused,
   time: () => isYt() ? yt?.getCurrentTime?.() || 0 : audio.currentTime,
@@ -384,7 +400,9 @@ async function loadTrack(autoplay, startAt = 0) {
     setMeta(t); renderPlayer(); render(); saveState();
     const p = await ytPlayer();
     if (player.cur() !== t.id) return; // 기다리는 사이 다른 곡으로 바뀜
-    autoplay ? p.loadVideoById(t.videoId, startAt) : p.cueVideoById(t.videoId, startAt);
+    // shortcut: 믹스·재생목록은 목록 안 몇 번째 곡이었는지는 복원하지 않고 처음부터 — 필요하면 getPlaylistIndex 저장
+    if (t.listId) p[autoplay ? 'loadPlaylist' : 'cuePlaylist']({ list: t.listId, listType: 'playlist', startSeconds: startAt });
+    else autoplay ? p.loadVideoById(t.videoId, startAt) : p.cueVideoById(t.videoId, startAt);
     if (autoplay) { t.plays++; saveTrack(t); }
     ytTimer = setInterval(tick, 250);
     return;
@@ -404,6 +422,7 @@ async function loadTrack(autoplay, startAt = 0) {
 
 function next(auto = false) {
   if (!player.queue.length) return;
+  if (!auto && listHasMore()) return yt.nextVideo();
   if (auto && stopAfterTrack) { stopAfterTrack = false; return; }
   if (auto && player.repeat === 'one') { eng.seek(0); eng.play(); return; }
   if (player.qi + 1 >= player.queue.length) {
@@ -413,6 +432,7 @@ function next(auto = false) {
   loadTrack(true);
 }
 function prev() {
+  if (inList() && eng.time() <= 3 && yt.getPlaylistIndex() > 0) return yt.previousVideo();
   if (eng.time() > 3 || player.qi === 0) { eng.seek(0); return; }
   player.qi--; loadTrack(true);
 }
@@ -430,8 +450,8 @@ if ('mediaSession' in navigator) {
   h('play', () => eng.play()); h('pause', () => eng.pause());
   h('previoustrack', prev); h('nexttrack', () => next());
   h('seekto', d => eng.seek(d.seekTime));
-  h('seekbackward', d => eng.seek(Math.max(0, eng.time() - (d.seekOffset || 10))));
-  h('seekforward', d => eng.seek(eng.time() + (d.seekOffset || 10)));
+  // 10초 건너뛰기를 등록하면 iOS 잠금 화면이 이전/다음 곡 대신 ±10초 버튼을 보여 준다
+  h('seekbackward', null); h('seekforward', null);
 }
 
 function renderPlayer() {
@@ -453,7 +473,7 @@ function renderPlayer() {
   lines.className = 'lines ' + (lyr.synced ? 'synced' : 'plain');
   lines.innerHTML = lyr.lines.length ? lyr.lines.map((l, i) => `<p data-i="${i}">${esc(l.text) || '♪'}</p>`).join('')
     : '<div class="none">가사가 없어요<br><br><button class="pill" data-act="editLyrics">✎ 가사 입력하기</button></div>';
-  lastLine = -2; syncPlayState(); tick();
+  lastLine = -2; syncPlayState(); tick(); showListVideo();
 }
 
 function syncPlayState() {
