@@ -1,5 +1,5 @@
-import * as db from './db.js';
-import { parseLyrics, activeLine, youtubeId, youtubeList } from './lrc.js';
+import * as db from './db.js?v=7';
+import { parseLyrics, activeLine, youtubeId, youtubeList } from './lrc.js?v=7';
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -115,8 +115,16 @@ async function addYouTubeList(list, firstVid) {
     await Promise.all(todo.slice(i, i + 5).map(v => addYouTube(ytUrl(v), meta[v], true)));
     toast(`추가 중… ${Math.min(i + 5, todo.length)}/${todo.length}`);
   }
+  // 목록 순서 그대로 플레이리스트도 만든다 (이미 있던 곡 포함)
+  const trackIds = ids.map(v => [...tracks.values()].find(t => t.videoId === v && !t.listId)?.id).filter(Boolean);
+  let name = list.startsWith('RD') ? `${tracks.get(trackIds[0])?.title || 'YouTube'} 믹스` : '';
+  if (!name) {
+    try { name = (await fetchJson(`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(`https://www.youtube.com/playlist?list=${list}`)}`)).title; } catch { /* 기본 이름 사용 */ }
+  }
+  const pl = { id: db.uid(), name: name || 'YouTube 재생목록', trackIds, createdAt: Date.now() };
+  playlists.push(pl); await savePlaylist(pl);
   const skipped = ids.length - todo.length;
-  toast(`${todo.length}곡 추가${skipped ? ` · 이미 있는 ${skipped}곡 건너뜀` : ''}`);
+  toast(`"${pl.name}" 플레이리스트 생성 · ${todo.length}곡 추가${skipped ? ` · 이미 있는 ${skipped}곡 건너뜀` : ''}`);
   render();
   return true;
 }
