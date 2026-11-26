@@ -83,24 +83,55 @@ async function addFiles(files) {
 async function fetchJson(url) {
   const r = await fetch(url); if (!r.ok) throw new Error(r.status); return r.json();
 }
-async function addYouTube(url, meta = {}) {
+const haveVideo = vid => [...tracks.values()].some(t => t.videoId === vid && !t.listId);
+
+async function addYouTube(url, meta = {}, quiet = false) {
   const vid = youtubeId(url), list = youtubeList(url);
-  if (!vid && !list) return toast('YouTube 주소가 아니에요');
-  if ([...tracks.values()].some(t => list ? t.listId === list : t.videoId === vid && !t.listId)) return toast('이미 추가된 항목이에요');
-  const src = trackUrl({ videoId: vid, listId: list }), mix = list?.startsWith('RD');
-  for (const u of meta.title ? [] : [`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(src)}`,
-    `https://noembed.com/embed?url=${encodeURIComponent(src)}`]) {
+  if (!quiet && list) return addYouTubeList(list, vid);
+  if (!vid) return quiet ? null : toast('YouTube 주소가 아니에요');
+  if (haveVideo(vid)) return quiet ? null : toast('이미 추가된 곡이에요');
+  for (const u of meta.title ? [] : [`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(ytUrl(vid))}`,
+    `https://noembed.com/embed?url=${encodeURIComponent(ytUrl(vid))}`]) {
     try { meta = await fetchJson(u); if (meta.title) break; } catch { /* 다음 방법 시도 */ }
   }
-  const title = meta.title ? (mix ? `${meta.title} 믹스` : meta.title) : list ? (mix ? 'YouTube 믹스' : 'YouTube 재생목록') : `YouTube ${vid}`;
   const t = {
-    id: db.uid(), type: 'youtube', videoId: vid, listId: list, title, artist: meta.author_name || '',
+    id: db.uid(), type: 'youtube', videoId: vid, title: meta.title || `YouTube ${vid}`, artist: meta.author_name || '',
     album: '', lyrics: '', fav: false, plays: 0, addedAt: Date.now(),
   };
   await saveTrack(t); await loadCover(t);
-  toast(meta.title ? `추가: ${meta.title}` : '제목을 못 가져왔어요. 편집에서 입력하세요');
-  render();
+  if (!quiet) { toast(meta.title ? `추가: ${meta.title}` : '제목을 못 가져왔어요. 편집에서 입력하세요'); render(); }
   return t;
+}
+
+// 믹스·재생목록 링크: 들어 있는 곡을 하나씩 따로 추가하고, 이미 있는 곡은 건너뛴다
+async function addYouTubeList(list, firstVid) {
+  toast('목록 불러오는 중…');
+  let ids;
+  try { ids = await listVideoIds(list); } catch { return toast('목록을 불러오지 못했어요. 비공개 목록이거나 연결이 불안정해요'); }
+  ids = [...new Set(firstVid ? [firstVid, ...ids] : ids)];
+  const todo = ids.filter(v => !haveVideo(v));
+  const meta = await titlesFromApi(todo);
+  for (let i = 0; i < todo.length; i += 5) {
+    await Promise.all(todo.slice(i, i + 5).map(v => addYouTube(ytUrl(v), meta[v], true)));
+    toast(`추가 중… ${Math.min(i + 5, todo.length)}/${todo.length}`);
+  }
+  const skipped = ids.length - todo.length;
+  toast(`${todo.length}곡 추가${skipped ? ` · 이미 있는 ${skipped}곡 건너뜀` : ''}`);
+  render();
+  return true;
+}
+
+// API 키가 있으면 제목을 한 번에(50곡당 1회) 가져온다. 없으면 곡마다 oEmbed로.
+async function titlesFromApi(ids) {
+  const out = {};
+  if (!ytKey()) return out;
+  for (let i = 0; i < ids.length; i += 50) {
+    try {
+      const j = await fetchJson(`https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${ids.slice(i, i + 50).join(',')}&key=${encodeURIComponent(ytKey())}`);
+      for (const v of j.items || []) out[v.id] = { title: v.snippet.title, author_name: v.snippet.channelTitle };
+    } catch { /* oEmbed로 대신 */ }
+  }
+  return out;
 }
 
 // ---------- YouTube 검색 ----------
@@ -352,14 +383,37 @@ function shuffleQueue(firstId) {
 }
 
 // ---------- 재생 엔진: 음원 파일은 <audio>, YouTube는 공식 iframe 플레이어 ----------
-let ytP = null, yt = null, ytTimer = 0;
+let ytApiP = null, ytP = null, yt = null, ytTimer = 0;
+const ytApi = () => ytApiP ||= new Promise((res, rej) => {
+  window.onYouTubeIframeAPIReady = res;
+  const s = document.createElement('script'); s.src = 'https://www.youtube.com/iframe_api';
+  s.onerror = () => { ytApiP = null; toast('YouTube 플레이어를 불러오지 못했어요. 인터넷 연결을 확인하세요'); rej(new Error('yt api')); };
+  document.head.append(s);
+});
+
+// 화면 밖 임시 플레이어에 목록을 올려서 곡 ID 목록만 읽고 버린다 (재생 중인 곡은 그대로)
+function listVideoIds(list) {
+  return ytApi().then(() => new Promise((res, rej) => {
+    const el = document.createElement('div');
+    el.style.cssText = 'position:fixed;left:-9999px;top:0;width:200px;height:200px';
+    document.body.append(el);
+    let p, poll, timer;
+    const finish = ids => {
+      clearInterval(poll); clearTimeout(timer);
+      try { p.destroy(); } catch { /* 이미 정리됨 */ }
+      el.remove(); ids?.length ? res(ids) : rej(new Error('empty'));
+    };
+    p = new YT.Player(el, { width: 200, height: 200, events: {
+      onReady: () => p.cuePlaylist({ list, listType: 'playlist' }),
+      onError: () => finish(null),
+    } });
+    poll = setInterval(() => { const ids = p.getPlaylist?.(); if (ids?.length) finish(ids); }, 300);
+    timer = setTimeout(() => finish(null), 15000);
+  }));
+}
+
 function ytPlayer() {
-  return ytP ||= new Promise(res => {
-    window.onYouTubeIframeAPIReady = res;
-    const s = document.createElement('script'); s.src = 'https://www.youtube.com/iframe_api';
-    s.onerror = () => toast('YouTube 플레이어를 불러오지 못했어요. 인터넷 연결을 확인하세요');
-    document.head.append(s);
-  }).then(() => new Promise(res => {
+  return ytP ||= ytApi().then(() => new Promise(res => {
     const p = new YT.Player('ytFrame', {
       width: '100%', height: '100%', playerVars: { playsinline: 1, rel: 0 },
       events: {
