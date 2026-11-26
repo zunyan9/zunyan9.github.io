@@ -42,6 +42,7 @@
 
 <section id="player" class="player" hidden>
   <div class="bg" id="playerBg"></div>
+  <div class="grab" aria-hidden="true"></div>
   <div class="phead">
     <button class="icon" id="playerClose" aria-label="닫기"><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></button>
     <div class="src"><small>재생 중</small><b id="playerSrc">라이브러리</b></div>
@@ -50,6 +51,8 @@
   <div class="pbody" id="pbody">
     <div class="artView">
       <img id="bigArt" class="big" alt="">
+      <div id="ytBox" class="big video" hidden><div id="ytFrame"></div></div>
+      <p id="ytNote" class="ytnote" hidden>화면을 끄면 YouTube가 멈출 수 있어요. 그때 잠금 화면의 ▶를 누르면 이어서 들릴 수 있어요. 안 되면 ⋯ 메뉴에서 Brave로 여세요.</p>
       <div class="ti">
         <div class="grow"><div class="t" id="pTitle"></div><div class="s" id="pArtist"></div></div>
         <button class="icon fav" id="pFav" aria-label="즐겨찾기">♡</button>

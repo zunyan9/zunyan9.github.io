@@ -81,12 +81,11 @@ async function addFiles(files) {
 async function fetchJson(url) {
   const r = await fetch(url); if (!r.ok) throw new Error(r.status); return r.json();
 }
-async function addYouTube(url) {
+async function addYouTube(url, meta = {}) {
   const vid = youtubeId(url);
   if (!vid) return toast('YouTube 주소가 아니에요');
   if ([...tracks.values()].some(t => t.videoId === vid)) return toast('이미 추가된 영상이에요');
-  let meta = {};
-  for (const u of [`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(ytUrl(vid))}`,
+  for (const u of meta.title ? [] : [`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(ytUrl(vid))}`,
     `https://noembed.com/embed?url=${encodeURIComponent(ytUrl(vid))}`]) {
     try { meta = await fetchJson(u); if (meta.title) break; } catch { /* 다음 방법 시도 */ }
   }
@@ -100,10 +99,36 @@ async function addYouTube(url) {
   return t;
 }
 
+// ---------- YouTube 검색 ----------
+// API 키는 공개 저장소에 넣지 않고 이 기기에만 저장한다.
+const ytKey = () => { try { return localStorage.getItem('ytKey') || ''; } catch { return ''; } };
+const decode = s => new DOMParser().parseFromString(s, 'text/html').documentElement.textContent;
+let ytResults = [];
+
+async function searchYouTube(q) {
+  if (!ytKey()) { window.open(`https://www.youtube.com/results?search_query=${encodeURIComponent(q)}`, '_blank'); return; }
+  const box = $('#ytResults'); box.innerHTML = '<div class="empty">검색 중…</div>';
+  try {
+    const r = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=15&q=${encodeURIComponent(q)}&key=${encodeURIComponent(ytKey())}`);
+    const j = await r.json();
+    if (j.error) throw new Error(j.error.errors?.[0]?.reason === 'quotaExceeded' ? '오늘 검색 한도를 다 썼어요. 내일 다시 쓸 수 있어요' : `검색 실패: ${j.error.message}`);
+    ytResults = j.items.map(i => ({ vid: i.id.videoId, title: decode(i.snippet.title), artist: decode(i.snippet.channelTitle), thumb: i.snippet.thumbnails?.medium?.url }));
+  } catch (e) { box.innerHTML = `<div class="empty">${esc(e.message.startsWith('검색') || e.message.startsWith('오늘') ? e.message : '인터넷 연결을 확인하세요')}</div>`; return; }
+  renderYtResults();
+}
+function renderYtResults() {
+  const have = new Set([...tracks.values()].map(t => t.videoId));
+  $('#ytResults').innerHTML = ytResults.length ? `<ul class="list">${ytResults.map((r, i) => `<li class="item">
+      <img class="art yt-thumb" src="${esc(r.thumb || 'icon.svg')}" alt="">
+      <div class="grow"><div class="t">${esc(r.title)}</div><div class="s">${esc(r.artist)}</div></div>
+      ${have.has(r.vid) ? '<span class="end">✓ 추가됨</span>' : `<button class="btn primary sm" data-act="ytAdd" data-i="${i}">추가</button>`}</li>`).join('')}</ul>`
+    : '<div class="empty">검색 결과가 없어요</div>';
+}
+
 async function deleteTrack(id) {
   const t = tracks.get(id);
   if (!await ask(`"${t.title}"을(를) 삭제할까요?`, { ok: '삭제', danger: true })) return;
-  if (player.cur() === id) { audio.pause(); audio.removeAttribute('src'); }
+  if (player.cur() === id) { eng.pause(); audio.removeAttribute('src'); }
   player.queue = player.queue.filter(q => q !== id);
   tracks.delete(id);
   await Promise.all([db.del('tracks', id), db.del('blobs', 'audio:' + id), db.del('blobs', 'cover:' + id)]);
@@ -120,7 +145,7 @@ function visible(list) {
 
 function itemHtml(t, extra = '') {
   const badge = t.type === 'youtube' ? '<span class="chip yt">YT</span>' : '<span class="chip file">FILE</span>';
-  const end = t.type === 'youtube' ? 'Brave ↗' : (t.lyrics ? '가사' : '');
+  const end = t.lyrics ? '가사' : '';
   return `<li class="item ${player.cur() === t.id ? 'playing' : ''}" data-id="${t.id}">
     <img class="art" src="${esc(cover(t))}" alt="" loading="lazy">
     <div class="grow" data-act="open"><div class="t">${t.fav ? '♥ ' : ''}${esc(t.title)}</div><div class="s">${badge}${esc(t.artist)}</div></div>
@@ -166,12 +191,22 @@ function render() {
       <div class="card"><h2>음원 파일</h2>
         <button class="btn primary" data-act="pickFiles">파일 선택 (MP3 · M4A · FLAC · WAV)</button>
         <p>파일 안의 제목·아티스트·앨범 커버·가사를 자동으로 읽어요. 파일은 이 기기 안에만 저장돼요.</p></div>
+      <div class="card"><h2>YouTube 검색</h2>
+        <form class="form-row" id="ytSearch"><input name="q" type="search" placeholder="노래 제목, 가수" required><button class="btn primary">검색</button></form>
+        ${ytKey() ? '' : '<p>API 키가 없어서 검색은 YouTube에서 열려요. 링크를 복사해 와서 아래 <b>붙여넣기로 추가</b>를 누르세요.</p>'}
+        <div id="ytResults"></div>
+        <details class="keybox"><summary>${ytKey() ? '✓ 앱 안 검색 켜짐 · API 키 변경' : '앱 안에서 검색하기 (API 키 설정)'}</summary>
+          <p>1. Safari로 console.cloud.google.com 접속 → 프로젝트 만들기<br>2. "YouTube Data API v3" 검색 → 사용 설정<br>
+          3. 사용자 인증 정보 → API 키 만들기 → 키 복사<br>4. 아래에 붙여넣고 저장 (이 기기에만 저장돼요)<br>무료로 하루 약 100번 검색할 수 있어요.</p>
+          <form class="form-row" id="ytKeyForm"><input name="key" placeholder="API 키" value="${esc(ytKey())}" autocomplete="off"><button class="btn">저장</button></form></details></div>
       <div class="card"><h2>YouTube 링크</h2>
         <form class="form-row" id="ytForm"><input name="url" type="url" inputmode="url" placeholder="https://youtu.be/…" required><button class="btn primary">추가</button></form>
+        <button class="btn" data-act="paste" style="margin-top:8px">📋 붙여넣기로 추가</button>
         <p>YouTube 곡은 누르면 Brave에서 열려요. Brave에서 공유 → <b>Playlist에 추가</b>하면 광고 없이 화면을 꺼도 들을 수 있어요.</p></div>
       <div class="card"><h2>저장 공간</h2><p id="storage">확인 중…</p></div>
       <div class="card"><h2>앱처럼 쓰기</h2><p>Safari에서 공유 버튼 → <b>홈 화면에 추가</b>를 누르면 주소창 없이 앱처럼 열려요. 홈 화면에서 연 앱과 Safari 탭은 저장 공간이 따로라, 한쪽에서만 쓰세요.</p></div>`;
     showStorage();
+    if (ytResults.length) renderYtResults();
   }
 }
 
@@ -208,7 +243,8 @@ function trackSheet(id) {
   const t = tracks.get(id), yt = t.type === 'youtube';
   openSheet(`<div class="head"><img class="art" src="${esc(cover(t))}" alt=""><div class="grow"><div class="t">${esc(t.title)}</div>
       <div class="s">${yt ? '<span class="chip yt">YOUTUBE</span>' : '<span class="chip file">FILE</span>'}${esc(t.artist)}</div></div></div>
-    ${yt ? `<button class="btn brave" data-s="brave">Brave에서 재생</button>` : `<button class="btn primary" data-s="play">재생</button>`}
+    <button class="btn primary" data-s="play">재생</button>
+    ${yt ? `<button class="btn brave" data-s="brave" style="margin-top:8px">Brave로 열기 (화면 꺼도 재생)</button>` : ''}
     <button class="opt" data-s="addPl">＋ 플레이리스트에 추가</button>
     <button class="opt" data-s="fav">${t.fav ? '♥ 즐겨찾기 해제' : '♡ 즐겨찾기'}</button>
     <button class="opt" data-s="edit">✎ 정보 · 가사 편집</button>
@@ -294,8 +330,8 @@ function playFromView(id) {
 }
 
 function playList(ids, startId, src, shuffle = player.shuffle) {
-  const files = ids.filter(i => tracks.get(i)?.type === 'file');
-  if (!files.length) return toast('재생할 음원 파일이 없어요 (YouTube 곡은 Brave에서 재생)');
+  const files = ids.filter(i => tracks.has(i));
+  if (!files.length) return toast('재생할 곡이 없어요');
   player.src = src; player.order = files.slice(); player.shuffle = shuffle;
   player.queue = files.slice();
   player.qi = Math.max(0, player.queue.indexOf(startId));
@@ -309,8 +345,51 @@ function shuffleQueue(firstId) {
   player.queue = [firstId, ...rest]; player.qi = 0;
 }
 
+// ---------- 재생 엔진: 음원 파일은 <audio>, YouTube는 공식 iframe 플레이어 ----------
+let ytP = null, yt = null, ytTimer = 0;
+function ytPlayer() {
+  return ytP ||= new Promise(res => {
+    window.onYouTubeIframeAPIReady = res;
+    const s = document.createElement('script'); s.src = 'https://www.youtube.com/iframe_api';
+    s.onerror = () => toast('YouTube 플레이어를 불러오지 못했어요. 인터넷 연결을 확인하세요');
+    document.head.append(s);
+  }).then(() => new Promise(res => {
+    const p = new YT.Player('ytFrame', {
+      width: '100%', height: '100%', playerVars: { playsinline: 1, rel: 0 },
+      events: {
+        onReady: () => { yt = p; res(p); },
+        onStateChange: e => { if (e.data === 0 && isYt()) next(true); syncPlayState(); },
+        onError: () => toast('이 영상은 앱 안에서 재생할 수 없어요. ⋯ 메뉴에서 Brave로 여세요'),
+      },
+    });
+  }));
+}
+const isYt = () => tracks.get(player.cur())?.type === 'youtube';
+const eng = {
+  paused: () => isYt() ? !yt || ![1, 3].includes(yt.getPlayerState()) : audio.paused,
+  time: () => isYt() ? yt?.getCurrentTime?.() || 0 : audio.currentTime,
+  dur: () => isYt() ? yt?.getDuration?.() || 0 : audio.duration,
+  seek: s => isYt() ? yt?.seekTo(s, true) : (audio.currentTime = s),
+  play: () => isYt() ? yt?.playVideo() : audio.play(),
+  pause: () => isYt() ? yt?.pauseVideo() : audio.pause(),
+};
+
 async function loadTrack(autoplay, startAt = 0) {
   const t = tracks.get(player.cur()); if (!t) return;
+  clearInterval(ytTimer);
+  if (t.type === 'youtube') {
+    audio.pause();
+    lyr = parseLyrics(t.lyrics); lastLine = -2;
+    if (autoplay) $('#player').hidden = false; // 영상이 화면에 보여야 재생된다
+    setMeta(t); renderPlayer(); render(); saveState();
+    const p = await ytPlayer();
+    if (player.cur() !== t.id) return; // 기다리는 사이 다른 곡으로 바뀜
+    autoplay ? p.loadVideoById(t.videoId, startAt) : p.cueVideoById(t.videoId, startAt);
+    if (autoplay) { t.plays++; saveTrack(t); }
+    ytTimer = setInterval(tick, 250);
+    return;
+  }
+  yt?.pauseVideo();
   const blob = await db.get('blobs', 'audio:' + t.id);
   if (!blob) { toast('파일을 찾을 수 없어요'); return; }
   if (audioUrl) URL.revokeObjectURL(audioUrl);
@@ -326,7 +405,7 @@ async function loadTrack(autoplay, startAt = 0) {
 function next(auto = false) {
   if (!player.queue.length) return;
   if (auto && stopAfterTrack) { stopAfterTrack = false; return; }
-  if (auto && player.repeat === 'one') { audio.currentTime = 0; audio.play(); return; }
+  if (auto && player.repeat === 'one') { eng.seek(0); eng.play(); return; }
   if (player.qi + 1 >= player.queue.length) {
     if (player.repeat !== 'all' && auto) return;
     player.qi = 0;
@@ -334,10 +413,10 @@ function next(auto = false) {
   loadTrack(true);
 }
 function prev() {
-  if (audio.currentTime > 3 || player.qi === 0) { audio.currentTime = 0; return; }
+  if (eng.time() > 3 || player.qi === 0) { eng.seek(0); return; }
   player.qi--; loadTrack(true);
 }
-const toggle = () => !audio.src ? null : audio.paused ? audio.play() : audio.pause();
+const toggle = () => !player.cur() ? null : eng.paused() ? eng.play() : eng.pause();
 
 function setMeta(t) {
   if (!('mediaSession' in navigator)) return;
@@ -348,11 +427,11 @@ function setMeta(t) {
 }
 if ('mediaSession' in navigator) {
   const ms = navigator.mediaSession, h = (a, f) => { try { ms.setActionHandler(a, f); } catch { /* 지원 안 하는 동작 */ } };
-  h('play', () => audio.play()); h('pause', () => audio.pause());
+  h('play', () => eng.play()); h('pause', () => eng.pause());
   h('previoustrack', prev); h('nexttrack', () => next());
-  h('seekto', d => { audio.currentTime = d.seekTime; });
-  h('seekbackward', d => { audio.currentTime = Math.max(0, audio.currentTime - (d.seekOffset || 10)); });
-  h('seekforward', d => { audio.currentTime += d.seekOffset || 10; });
+  h('seekto', d => eng.seek(d.seekTime));
+  h('seekbackward', d => eng.seek(Math.max(0, eng.time() - (d.seekOffset || 10))));
+  h('seekforward', d => eng.seek(eng.time() + (d.seekOffset || 10)));
 }
 
 function renderPlayer() {
@@ -361,6 +440,7 @@ function renderPlayer() {
   if (!t) { $('#player').hidden = true; return; }
   const c = cover(t);
   $('#miniArt').src = $('#bigArt').src = $('#smallArt').src = c;
+  $('#bigArt').hidden = t.type === 'youtube'; $('#ytBox').hidden = $('#ytNote').hidden = t.type !== 'youtube';
   $('#playerBg').style.backgroundImage = `url("${c}")`;
   $('#miniTitle').textContent = $('#pTitle').textContent = $('#pTitle2').textContent = t.title;
   $('#pArtist').textContent = [t.artist, t.album].filter(Boolean).join(' · ');
@@ -377,18 +457,18 @@ function renderPlayer() {
 }
 
 function syncPlayState() {
-  const icon = audio.paused ? PLAY : PAUSE;
+  const paused = eng.paused(), icon = paused ? PLAY : PAUSE;
   $('#toggle').innerHTML = icon; $('#miniToggle').innerHTML = icon.replace('class="fill"', 'class="fill" style="color:#fff"');
-  if ('mediaSession' in navigator) navigator.mediaSession.playbackState = audio.paused ? 'paused' : 'playing';
+  if ('mediaSession' in navigator) navigator.mediaSession.playbackState = paused ? 'paused' : 'playing';
 }
 
 let lastSave = 0;
 function tick() {
-  const d = audio.duration, c = audio.currentTime;
+  const d = eng.dur(), c = eng.time();
   if (!$('#seek').dragging) $('#seek').value = d ? (c / d) * 100 : 0;
   $('#cur').textContent = fmt(c); $('#dur').textContent = '-' + fmt((d || 0) - c);
   $('#miniProg').style.width = d ? (c / d) * 100 + '%' : 0;
-  if (sleepAt && Date.now() >= sleepAt) { sleepAt = 0; audio.pause(); toast('취침 예약으로 정지했어요'); }
+  if (sleepAt && Date.now() >= sleepAt) { sleepAt = 0; eng.pause(); toast('취침 예약으로 정지했어요'); }
   if (Date.now() - lastSave > 5000) { lastSave = Date.now(); saveState(); }
   // 가사 강조
   const i = lyr.synced ? activeLine(lyr.lines, c + 0.2) : -1;
@@ -407,7 +487,7 @@ function tick() {
 
 function saveState() {
   try {
-    localStorage.setItem('player', JSON.stringify({ queue: player.queue, order: player.order, qi: player.qi, t: audio.currentTime,
+    localStorage.setItem('player', JSON.stringify({ queue: player.queue, order: player.order, qi: player.qi, t: eng.time(),
       shuffle: player.shuffle, repeat: player.repeat, src: player.src }));
   } catch { /* 저장 못해도 재생에는 지장 없음 */ }
 }
@@ -423,7 +503,7 @@ async function restoreState() {
 audio.addEventListener('timeupdate', tick);
 audio.addEventListener('play', syncPlayState);
 audio.addEventListener('pause', () => { syncPlayState(); saveState(); });
-audio.addEventListener('ended', () => next(true));
+audio.addEventListener('ended', () => { if (!isYt()) next(true); });
 audio.addEventListener('loadedmetadata', tick);
 
 function sleepSheet() {
@@ -460,7 +540,7 @@ $('#view').onclick = async e => {
   if (a.dataset.pl) { openPlaylist = a.dataset.pl; render(); return scrollTo(0, 0); }
   const p = playlists.find(x => x.id === openPlaylist);
   switch (a.dataset.act) {
-    case 'open': { const t = tracks.get(id); return t.type === 'youtube' ? trackSheet(id) : playFromView(id); }
+    case 'open': return playFromView(id);
     case 'more': return trackSheet(id);
     case 'pickFiles': return $('#fileInput').click();
     case 'newPl': return newPlaylist();
@@ -468,6 +548,12 @@ $('#view').onclick = async e => {
     case 'playAll': return playList(p.trackIds, null, p.name, false);
     case 'shuffleAll': return playList(p.trackIds, null, p.name, true);
     case 'plMenu': return playlistMenu();
+    case 'ytAdd': { const r = ytResults[+a.dataset.i]; a.disabled = true; return addYouTube(ytUrl(r.vid), { title: r.title, author_name: r.artist }); }
+    case 'paste': {
+      let text = '';
+      try { text = await navigator.clipboard.readText(); } catch { return toast('붙여넣기를 허용하지 않았어요. 링크 칸에 직접 붙여넣으세요'); }
+      return youtubeId(text) ? addYouTube(text) : toast('복사한 내용이 YouTube 링크가 아니에요');
+    }
     case 'up': case 'down': {
       const i = p.trackIds.indexOf(id), j = i + (a.dataset.act === 'up' ? -1 : 1);
       if (j < 0 || j >= p.trackIds.length) return;
@@ -477,6 +563,13 @@ $('#view').onclick = async e => {
   }
 };
 $('#view').addEventListener('submit', async e => {
+  const f = e.target;
+  if (f.id === 'ytSearch') { e.preventDefault(); f.q.blur(); return searchYouTube(f.q.value.trim()); }
+  if (f.id === 'ytKeyForm') {
+    e.preventDefault();
+    try { localStorage.setItem('ytKey', f.key.value.trim()); } catch { return toast('저장하지 못했어요'); }
+    toast(f.key.value.trim() ? '저장했어요. 이제 앱 안에서 검색돼요' : 'API 키를 지웠어요'); return render();
+  }
   if (e.target.id !== 'ytForm') return;
   e.preventDefault();
   const btn = e.target.querySelector('button'); btn.disabled = true;
@@ -502,8 +595,8 @@ $('#repeat').onclick = () => {
   toast({ off: '반복 끔', all: '전체 반복', one: '한 곡 반복' }[player.repeat]); renderPlayer(); saveState();
 };
 const seek = $('#seek');
-seek.oninput = () => { seek.dragging = true; $('#cur').textContent = fmt((seek.value / 100) * (audio.duration || 0)); };
-seek.onchange = () => { seek.dragging = false; if (audio.duration) audio.currentTime = (seek.value / 100) * audio.duration; };
+seek.oninput = () => { seek.dragging = true; $('#cur').textContent = fmt((seek.value / 100) * (eng.dur() || 0)); };
+seek.onchange = () => { seek.dragging = false; if (eng.dur()) eng.seek((seek.value / 100) * eng.dur()); };
 $('#pFav').onclick = async () => { const t = tracks.get(player.cur()); t.fav = !t.fav; await saveTrack(t); renderPlayer(); render(); };
 const setPv = v => { $('#player').classList.toggle('lyrics', v === 'lyrics'); document.querySelectorAll('[data-pv]').forEach(b => b.classList.toggle('on', b.dataset.pv === v)); lastLine = -2; tick(); };
 document.querySelectorAll('[data-pv]').forEach(b => { b.onclick = () => setPv(b.dataset.pv); });
@@ -511,11 +604,20 @@ $('#lyPrev').onclick = () => setPv('lyrics');
 $('#lines').onclick = e => {
   if (e.target.closest('[data-act="editLyrics"]')) return editTrack(player.cur());
   const p = e.target.closest('p[data-i]'); if (!p || !lyr.synced) return;
-  audio.currentTime = lyr.lines[+p.dataset.i].t; if (audio.paused) audio.play();
+  eng.seek(lyr.lines[+p.dataset.i].t); if (eng.paused()) eng.play();
 };
 $('#lyricsEdit').onclick = () => editTrack(player.cur());
 $('#sleepBtn').onclick = sleepSheet;
 $('#queueBtn').onclick = queueSheet;
+
+// 아래로 쓸어내려 닫기 (가사 스크롤·재생바·영상 위에서는 무시)
+function swipeDown(el, close, ignore) {
+  let y0 = null;
+  el.addEventListener('touchstart', e => { y0 = ignore(e) ? null : e.touches[0].clientY; }, { passive: true });
+  el.addEventListener('touchend', e => { if (y0 !== null && e.changedTouches[0].clientY - y0 > 70) close(); y0 = null; });
+}
+swipeDown($('#player'), () => { $('#player').hidden = true; }, e => e.target.closest('.lines, .controls, #ytBox'));
+swipeDown($('#sheet'), closeSheet, e => $('#sheet').scrollTop > 0 || e.target.closest('input, textarea, #ytResults'));
 
 // 썸네일을 못 불러오면(오프라인 등) 기본 아이콘으로
 document.addEventListener('error', e => { const i = e.target; if (i.tagName === 'IMG' && !i.src.endsWith('icon.svg')) i.src = 'icon.svg'; }, true);
