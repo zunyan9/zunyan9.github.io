@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="My Library">
+<meta name="theme-color" content="#0d0d14">
+<title>My Library</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" id="touchIcon" href="icon.svg">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/jsmediatags@3.9.7/dist/jsmediatags.min.js"></script>
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<header class="top">
+  <h1 id="viewTitle">라이브러리</h1>
+  <input id="search" type="search" placeholder="제목, 아티스트, 가사 검색" autocomplete="off">
+</header>
+
+<main id="view"></main>
+
+<div id="mini" class="mini" hidden>
+  <img id="miniArt" class="art" alt="">
+  <div class="grow" id="miniOpen">
+    <div id="miniTitle" class="t"></div>
+    <div id="miniLine" class="s"></div>
+  </div>
+  <button id="miniToggle" class="icon" aria-label="재생/일시정지"></button>
+  <div class="miniProg"><i id="miniProg"></i></div>
+</div>
+
+<nav class="tabs">
+  <button data-tab="library" class="on"><svg viewBox="0 0 24 24"><path d="M4 19V5M9 19V5M14 19l4-14 3 1-4 14"/></svg>라이브러리</button>
+  <button data-tab="playlists"><svg viewBox="0 0 24 24"><path d="M3 6h13M3 12h13M3 18h9M18 14v7M15 18h6"/></svg>플레이리스트</button>
+  <button data-tab="add"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>추가</button>
+</nav>
+
+<section id="player" class="player" hidden>
+  <div class="bg" id="playerBg"></div>
+  <div class="phead">
+    <button class="icon" id="playerClose" aria-label="닫기"><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></button>
+    <div class="src"><small>재생 중</small><b id="playerSrc">라이브러리</b></div>
+    <button class="pill" id="lyricsEdit">✎ 편집</button>
+  </div>
+  <div class="pbody" id="pbody">
+    <div class="artView">
+      <img id="bigArt" class="big" alt="">
+      <div class="ti">
+        <div class="grow"><div class="t" id="pTitle"></div><div class="s" id="pArtist"></div></div>
+        <button class="icon fav" id="pFav" aria-label="즐겨찾기">♡</button>
+      </div>
+      <div class="lyprev" id="lyPrev"></div>
+    </div>
+    <div class="lyView">
+      <div class="lyhead"><img id="smallArt" class="art" alt=""><div><div class="t" id="pTitle2"></div><div class="s" id="pArtist2"></div></div></div>
+      <div class="lines" id="lines"></div>
+    </div>
+  </div>
+  <div class="controls">
+    <input type="range" id="seek" min="0" max="100" step="0.1" value="0" aria-label="재생 위치">
+    <div class="tm"><span id="cur">0:00</span><span id="dur">0:00</span></div>
+    <div class="ctl">
+      <button class="icon" id="shuffle" aria-label="셔플"><svg viewBox="0 0 24 24"><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg></button>
+      <button class="icon lg" id="prev" aria-label="이전 곡"><svg viewBox="0 0 24 24" class="fill"><path d="M6 5h2v14H6zM20 5v14L9 12z"/></svg></button>
+      <button class="pp" id="toggle" aria-label="재생/일시정지"></button>
+      <button class="icon lg" id="next" aria-label="다음 곡"><svg viewBox="0 0 24 24" class="fill"><path d="M16 5h2v14h-2zM4 5v14l11-7z"/></svg></button>
+      <button class="icon" id="repeat" aria-label="반복"><svg viewBox="0 0 24 24"><path d="M17 2l4 4-4 4M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4M21 13v2a3 3 0 0 1-3 3H3"/></svg><b id="repeatOne">1</b></button>
+    </div>
+    <div class="btmrow">
+      <button data-pv="art" class="on">앨범</button>
+      <button data-pv="lyrics">가사</button>
+      <button id="sleepBtn">취침 예약</button>
+      <button id="queueBtn">대기열</button>
+    </div>
+  </div>
+</section>
+
+<div id="dim" class="dim" hidden></div>
+<section id="sheet" class="sheet" hidden></section>
+
+<dialog id="editor">
+  <form method="dialog" id="editForm">
+    <h2>정보 · 가사 편집</h2>
+    <label>제목<input name="title" required></label>
+    <label>아티스트<input name="artist"></label>
+    <label>앨범<input name="album"></label>
+    <label>커버 이미지 <input name="cover" type="file" accept="image/*"></label>
+    <label>가사 <small>(일반 텍스트 또는 LRC: [01:23.45]가사)</small><textarea name="lyrics" rows="10"></textarea></label>
+    <label class="filebtn">LRC 파일 불러오기<input name="lrc" type="file" accept=".lrc,.txt,text/plain"></label>
+    <div class="row2"><button value="cancel" formnovalidate>취소</button><button value="save" class="primary">저장</button></div>
+  </form>
+</dialog>
+
+<div id="toast" class="toast" hidden></div>
+<input type="file" id="fileInput" accept="audio/*,.mp3,.m4a,.aac,.flac,.wav" multiple hidden>
+</body>
+</html>
